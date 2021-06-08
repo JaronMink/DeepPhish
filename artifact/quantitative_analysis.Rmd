@@ -1,0 +1,1322 @@
+---
+title: "DeepPhish Analysis"
+output:
+  pdf_document:
+    extra_dependencies:
+    - tabularx
+    - float
+    - caption
+    - booktabs
+    - multirow
+    - multicol
+  html_document:
+    df_print: paged
+  word_document: default
+---
+
+This analysis provides the quantitative results reported in Section 4 and Appendix B
+
+```{r libraries, include=FALSE, warn.conflicts = FALSE}
+library(ggplot2)
+library(ggpubr)
+library(lmerTest)
+library(dplyr)
+library(magrittr)
+library(knitr)
+library(tidyverse)
+library(MuMIn)
+library(emmeans)
+library(chron)
+library(tinytex)
+
+#if tinytex is not installed, install
+if (!tinytex::is_tinytex()) {
+  tinytex::install_tinytex()
+} 
+```
+
+```{r setup, include=FALSE}
+#change working directory and change knitr to accommodate this
+setwd("./")
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "./")
+
+#file names
+study_prompt0 = "no_prompt"
+study_prompt1 = "soft_prompt"
+study_prompt2 = "hard_prompt"
+
+main_study_data_path = "data/main_study"
+sybil_study_data_path = "data/follow-up_study"
+```
+
+```{r read main study data, include = FALSE}
+#Load profile response dataframes from different files
+profiles0 <- read.csv(file.path(main_study_data_path, study_prompt0, "profile_ratings.csv"))
+profiles0 %<>%
+  mutate(prompt='No')
+profiles1 <- read.csv(file.path(main_study_data_path, study_prompt1, "profile_ratings.csv"))
+profiles1 %<>%
+  mutate(prompt='Soft')
+profiles2 <- read.csv(file.path(main_study_data_path, study_prompt2, "profile_ratings.csv"))
+profiles2 %<>%
+  mutate(prompt='Hard')
+#combine profile response into one dataframe
+full_profiles <- rbind(rbind(profiles0, profiles1), profiles2)
+full_profiles$prompt <- factor(full_profiles$prompt, levels = c("No", "Soft", "Hard"))
+
+#Load participant response from different files
+participants0 <- read.csv(file.path(main_study_data_path, study_prompt0, "participant_result.csv"))
+participants1 <- read.csv(file.path(main_study_data_path, study_prompt1, "participant_result.csv"))
+participants2 <- read.csv(file.path(main_study_data_path, study_prompt2, "participant_result.csv"))
+#combine participant responses into one dataframe
+full_participants <- rbind(rbind(participants0, participants1), participants2)
+```
+
+```{r clean main study data, include = FALSE}
+#rename columns and factorize a few variables
+
+#reformat profile responses
+clean_profiles <- function(profiles) {
+  profiles$id <- factor(profiles$id)
+  profiles$p_id <- factor(profiles$p_id)
+  profiles %<>%
+    mutate(p_id = as.character(p_id),
+          p_id = if_else(p_id == '29032234', 'Network Admin', p_id),
+          p_id = if_else(p_id == '72524912', 'Financial Manager', p_id),
+          p_id = if_else(p_id == '119365740', 'HR Worker', p_id),
+          p_id = as.factor(p_id))
+  profiles$p_maincond <- factor(profiles$p_maincond)
+  profiles$p_subcond <- factor(profiles$p_subcond)
+  
+  profiles %<>%
+      mutate(req = as.character(req),
+           req = if_else(req == '0', 'Ignore', req),
+           req = if_else(req == '1', 'Accept', req),
+           req = as.factor(req))
+
+  profiles %<>%
+      mutate(p_subcond = as.character(p_subcond),
+           p_subcond = if_else(p_subcond == '0', 'Consistent', p_subcond),
+           p_subcond = if_else(p_subcond == '1', 'Intra. Img', p_subcond),
+           p_subcond = if_else(p_subcond == '2', 'Intra. Txt', p_subcond),
+           p_subcond = if_else(p_subcond == '3', 'Inter. Txt', p_subcond),
+           p_subcond = if_else(p_subcond == '5', 'Inter. Img', p_subcond),
+            p_subcond = if_else(p_subcond == '6', 'Sybil', p_subcond),
+           p_subcond = as.factor(p_subcond))
+  profiles$demo_gender <- factor(profiles$demo_gender) 
+  
+  profiles %>% 
+    rename(trust = avg_pos_trust)
+  
+  profiles%<>%
+    mutate(demo_gender = as.character(demo_gender),
+            demo_gender = if_else(demo_gender == '1', 'Female', demo_gender),
+            demo_gender = if_else(demo_gender == '2', 'Male', demo_gender),
+            demo_gender = if_else(demo_gender == '1,2', 'Non-binary', demo_gender),
+            demo_gender = if_else(demo_gender == '3', 'Non-binary', demo_gender),
+            demo_gender = if_else(demo_gender == '4', 'Self-Describe', demo_gender),
+            demo_gender = if_else(demo_gender == '5', 'Did not disclose', demo_gender),
+            demo_gender = as.factor(demo_gender))
+  profiles$demo_num_age <- profiles$demo_age
+  profiles%<>%
+    mutate(demo_age = as.character(demo_age),
+            demo_age = if_else(demo_age == '1', '18-19', demo_age),
+            demo_age = if_else(demo_age == '2', '20-24', demo_age),
+            demo_age = if_else(demo_age == '3', '25-29', demo_age),
+            demo_age = if_else(demo_age == '4', '30-34', demo_age),
+            demo_age = if_else(demo_age == '5', '35-39', demo_age),
+            demo_age = if_else(demo_age == '6', '40-44', demo_age),
+            demo_age = if_else(demo_age == '7', '45-49', demo_age),
+            demo_age = if_else(demo_age == '8', '50-54', demo_age),
+            demo_age = if_else(demo_age == '9', '55-59', demo_age),
+            demo_age = if_else(demo_age == '10', '60-64', demo_age),
+            demo_age = if_else(demo_age == '11', '65-69', demo_age),
+            demo_age = if_else(demo_age == '12', '70+', demo_age),
+            demo_age = if_else(demo_age == '13', 'Did not disclose', demo_age),
+            demo_age = as.factor(demo_age))
+  
+  profiles%<>%
+    mutate(img_gender = as.character(img_gender),
+            img_gender = if_else(img_gender == 'f', 'Female', img_gender),
+            img_gender = if_else(img_gender == 'm', 'Male', img_gender),
+            img_gender = as.factor(img_gender))
+  
+  profiles%<>%
+    mutate(A. = as.numeric(A.),
+           A. = (A. - 1 )*10)
+   profiles%<>%
+    mutate(B. = as.numeric(B.),
+           B. = (B. - 1)*10)
+    profiles%<>%
+    mutate(I. = as.numeric(I.),
+           I. = (I.-1)*10)
+  
+   
+    profiles%<>%
+      mutate(base_I. = as.numeric(base_I.),
+           base_I. = (base_I.-1)*10)
+    profiles%<>%
+      mutate(base_A. = as.numeric(base_A.),
+           base_A. = (base_A.-1)*10)
+    profiles%<>%
+      mutate(base_B. = as.numeric(base_B.),
+           base_B. = (base_B.-1)*10)
+    profiles%<>%
+      mutate(avg_pos_trust = as.numeric(avg_pos_trust),
+            avg_pos_trust = (avg_pos_trust-1)*10)
+
+  profiles$expandedPortrait <- factor(profiles$expandedPortrait)
+  profiles %<>%
+    mutate(expandedPortrait = as.character(expandedPortrait),
+           expandedPortrait = if_else(expandedPortrait == '0', 'FALSE', expandedPortrait),
+           expandedPortrait = if_else(expandedPortrait == '1', 'TRUE', expandedPortrait),
+           expandedPortrait = as.factor(expandedPortrait))
+  profiles$expandedExpr <- factor(profiles$expandedExpr)
+  profiles %<>%
+    mutate(expandedExpr = as.character(expandedExpr),
+           expandedExpr = if_else(expandedExpr == '0', 'FALSE', expandedExpr),
+           expandedExpr = if_else(expandedExpr == '1', 'TRUE', expandedExpr),
+           expandedExpr = as.factor(expandedExpr))
+  
+  
+    profiles%<>%
+     mutate(soc_ln_use = as.character(soc_ln_use),
+            soc_ln_use = if_else(soc_ln_use == '1', 'Yes', soc_ln_use),
+            soc_ln_use = if_else(soc_ln_use == '2', 'No', soc_ln_use),
+            soc_ln_use = as.factor(soc_ln_use))
+
+  
+    profiles%<>%
+      mutate(soc_conn= paste3(soc_account_conn, soc_ln_conn),
+      )
+  profiles$soc_num_conn <- as.numeric(as.character(profiles$soc_conn))
+  profiles$hoveredEduTime <- as.numeric((profiles$hoveredEduTime))
+  profiles$hoveredExprTime <- as.numeric((profiles$hoveredExprTime))
+  profiles$hoveredSummTime <- as.numeric((profiles$hoveredSummTime))
+  profiles$hoveredImageTime <- as.numeric((profiles$hoveredImageTime))
+
+  profiles%<>%
+  mutate(demo_educ_bin = as.character(demo_educ),
+          demo_educ_bin = if_else(demo_educ_bin == '1', 'Less than BS', demo_educ_bin),
+          demo_educ_bin = if_else(demo_educ_bin == '2', 'Less than BS', demo_educ_bin),
+          demo_educ_bin = if_else(demo_educ_bin == '3', 'Bachelors', demo_educ_bin),
+          demo_educ_bin = if_else(demo_educ_bin == '4', 'Graduate', demo_educ_bin),
+          demo_educ_bin = if_else(demo_educ_bin == '5', 'Graduate', demo_educ_bin),
+          demo_educ_bin = if_else(demo_educ_bin == '6', 'Graduate', demo_educ_bin),
+          demo_educ_bin = if_else(demo_educ_bin == '7', 'Did not disclose', demo_educ_bin),
+          demo_educ_bin = as.factor(demo_educ_bin))
+  profiles%<>%
+    mutate(demo_educ = as.character(demo_educ),
+            demo_educ = if_else(demo_educ == '1', 'HS', demo_educ),
+            demo_educ = if_else(demo_educ == '2', 'AS', demo_educ),
+            demo_educ = if_else(demo_educ == '3', 'BS', demo_educ),
+            demo_educ = if_else(demo_educ == '4', 'MS', demo_educ),
+            demo_educ = if_else(demo_educ == '5', 'PhD', demo_educ),
+            demo_educ = if_else(demo_educ == '6', 'Prof.', demo_educ),
+            demo_educ = if_else(demo_educ == '7', 'Did not disclose', demo_educ),
+            demo_educ = as.factor(demo_educ))
+   profiles$demo_educ <- factor(profiles$demo_educ)
+  profiles%<>%
+    mutate(prof_expr= as.character(prof_expr),
+           expr_fin = if_else(grepl("1", prof_expr, fixed=TRUE), "Yes", "No"),
+           expr_it = if_else(grepl("2", prof_expr, fixed=TRUE), "Yes", "No"),
+           expr_hr = if_else(grepl("3", prof_expr, fixed=TRUE), "Yes", "No")
+           )
+  profiles$expr_fin <- factor(profiles$expr_fin)
+  profiles$expr_it <- factor(profiles$expr_it)
+  profiles$expr_hr <- factor(profiles$expr_hr)
+  #make trust the average of these three metrics
+  profiles[['trust']] <- (profiles[["A."]] + profiles[["B."]] + profiles[["I."]])/3
+  profiles[['base_trust']] <- (profiles[["base_A."]] + profiles[["base_B."]] + profiles[["base_I."]])/3
+
+  return(profiles)
+}
+
+paste3 <- function(...,sep=", ") {
+     L <- list(...)
+     L <- lapply(L,function(x) {x[is.na(x)] <- ""; x})
+     ret <-gsub(paste0("(^",sep,"|",sep,"$)"),"",
+                 gsub(paste0(sep,sep),sep,
+                      do.call(paste,c(L,list(sep=sep)))))
+     is.na(ret) <- ret==""
+     ret
+     }
+
+#reformat participant responses
+clean_participants <- function(participants) {
+  participants$StartDate <- as.POSIXct(participants$StartDate, format = "%Y-%m-%d %H:%M:%S")
+  participants$EndDate <- as.POSIXct(participants$EndDate, format = "%Y-%m-%d %H:%M:%S")
+  participants$totalMin <- as.numeric(difftime(participants$EndDate, participants$StartDate, units = "mins"))
+  
+  participants%<>%
+    mutate(demo_gender = as.character(demo_gender),
+            demo_gender = if_else(demo_gender == '1', 'Female', demo_gender),
+            demo_gender = if_else(demo_gender == '2', 'Male', demo_gender),
+            demo_gender = if_else(demo_gender == '1,2', 'Non-binary', demo_gender),
+            demo_gender = if_else(demo_gender == '3', 'Non-binary', demo_gender),
+            demo_gender = if_else(demo_gender == '4', 'Self-Describe', demo_gender),
+            demo_gender = if_else(demo_gender == '5', 'Did not disclose', demo_gender),
+            demo_gender = as.factor(demo_gender))
+  participants$demo_age_num <- participants$demo_age
+  participants%<>%
+      mutate(demo_age = as.character(demo_age),
+            demo_age = if_else(demo_age == '1', '18-19', demo_age),
+            demo_age = if_else(demo_age == '2', '20-24', demo_age),
+            demo_age = if_else(demo_age == '3', '25-29', demo_age),
+            demo_age = if_else(demo_age == '4', '30-34', demo_age),
+            demo_age = if_else(demo_age == '5', '35-39', demo_age),
+            demo_age = if_else(demo_age == '6', '40-44', demo_age),
+            demo_age = if_else(demo_age == '7', '45-49', demo_age),
+            demo_age = if_else(demo_age == '8', '50-54', demo_age),
+            demo_age = if_else(demo_age == '9', '55-59', demo_age),
+            demo_age = if_else(demo_age == '10', '60-64', demo_age),
+            demo_age = if_else(demo_age == '11', '65-69', demo_age),
+            demo_age = if_else(demo_age == '12', '70+', demo_age),
+            demo_age = if_else(demo_age == '13', 'Did not disclose', demo_age),
+            demo_age = as.factor(demo_age))
+    participants%<>%
+      mutate(demo_educ = as.character(demo_educ),
+            demo_educ = if_else(demo_educ == '1', 'HS', demo_educ),
+            demo_educ = if_else(demo_educ == '2', 'AS', demo_educ),
+            demo_educ = if_else(demo_educ == '3', 'BS', demo_educ),
+            demo_educ = if_else(demo_educ == '4', 'MS', demo_educ),
+            demo_educ = if_else(demo_educ == '5', 'PhD', demo_educ),
+            demo_educ = if_else(demo_educ == '6', 'Prof.', demo_educ),
+            demo_educ = if_else(demo_educ == '7', 'Did not disclose', demo_educ),
+            demo_educ = as.factor(demo_educ))
+    participants%<>%
+      mutate(demo_ethn = as.character(demo_ethn),
+            demo_ethn = if_else(demo_ethn == '1', 'White', demo_ethn),
+            demo_ethn = if_else(demo_ethn == '2', 'Hispanic', demo_ethn),
+            demo_ethn = if_else(demo_ethn == '3', 'Black', demo_ethn),
+            demo_ethn = if_else(demo_ethn == '4', 'Asian', demo_ethn),
+            demo_ethn = if_else(demo_ethn == '5', 'American Indian', demo_ethn),
+            demo_ethn = if_else(demo_ethn == '6', 'Pacific Islander', demo_ethn),
+            demo_ethn = if_else(demo_ethn == '7', 'Other', demo_ethn),
+            demo_ethn = if_else(demo_ethn == '8', 'Did not disclose', demo_ethn),
+            demo_ethn = as.factor(demo_ethn))
+    
+    
+    participants%<>%
+      mutate(soc_ln_use = as.character(soc_ln_use),
+            soc_ln_use = if_else(soc_ln_use == '1', 'Yes', soc_ln_use),
+            soc_ln_use = if_else(soc_ln_use == '2', 'No', soc_ln_use),
+            soc_ln_use = as.factor(soc_ln_use))
+    
+  
+    participants%<>%
+      mutate(soc_conn= paste3(soc_account_conn, soc_ln_conn),
+            soc_conn = if_else(soc_conn == '1', '0-100', soc_conn),
+            soc_conn = if_else(soc_conn == '2', '101-200', soc_conn),
+            soc_conn = if_else(soc_conn == '3', '201-300', soc_conn),
+            soc_conn = if_else(soc_conn == '4', '301-400', soc_conn),
+            soc_conn = if_else(soc_conn == '5', '401-500', soc_conn),
+            soc_conn = if_else(soc_conn == '6', '501-600', soc_conn),
+            soc_conn = if_else(soc_conn == '7', '601-700', soc_conn),
+            soc_conn = if_else(soc_conn == '8', '701-800', soc_conn),
+            soc_conn = if_else(soc_conn == '8', '801-900', soc_conn),
+            soc_conn = if_else(soc_conn == '8', '901-1000', soc_conn),
+            soc_conn = if_else(soc_conn == '9', '1001+', soc_conn),
+            soc_conn = if_else(soc_conn == '10', 'Did not disclose', soc_conn)
+           )
+    
+    #mark prior expereience
+    participants%<>%
+      mutate(prof_expr= as.character(prof_expr),
+           expr_fin = if_else(grepl("1", prof_expr, fixed=TRUE), "Yes", "No"),
+           expr_it = if_else(grepl("2", prof_expr, fixed=TRUE), "Yes", "No"),
+           expr_hr = if_else(grepl("3", prof_expr, fixed=TRUE), "Yes", "No")
+           )
+  return(participants)
+}
+
+profiles0 <- clean_profiles(profiles0)
+profiles1 <- clean_profiles(profiles1)
+profiles2 <- clean_profiles(profiles2)
+full_profiles <- clean_profiles(full_profiles)
+
+participants0 <- clean_participants(participants0)
+participants1 <- clean_participants(participants1)
+participants2 <- clean_participants(participants2)
+full_participants <- clean_participants(full_participants)
+```
+
+
+```{r define readable names for variables, include=FALSE}
+
+#formatting for p-values
+format_p <- function(p) {
+  if (p < 0.001) {
+    return("<0.001")
+  } else {
+    return(sprintf("\\hphantom{<}%0.3f", p))
+  }
+}
+
+define_col_to_readable_name <- function() {
+  col_names =  c(
+    "id",
+    "p_subcond",
+    "p_maincond",
+    "A.",
+    "B.",
+    "I.",
+    "base_A.",
+    "base_B.",
+    "base_I.",
+    "p_id",
+    "demo_age",
+    "demo_gender",
+    "img_gender",
+    "trust"
+  )
+  foo <- vector(mode="list", length=length(col_names))
+  names(foo) <- col_names
+  foo["id"] = "subject"
+  foo["p_subcond"] = "Artifact Condition"
+  foo["p_maincond"] = "Main Condition"
+  foo["trust"] = "Trust"
+
+  foo["A."] = "Ability"
+  foo["B."] = "Benevolence"
+  foo["I."] = "Integrity"
+
+  foo["base_A."] = "Base Ability"
+  foo["base_B."] = "Base Benevolence"
+  foo["base_I."] = "Base Integrity"
+  foo["p_id"] = "Profile"
+  foo["demo_age"] = "Participant Age"
+  foo["demo_gender"] = "Participant Gender"
+  foo["img_gender"] = "Image Gender"
+
+  return(foo)
+}
+
+col_to_readable <- define_col_to_readable_name()
+
+rating_hist <- function(data, title) {
+  hist(data, xlim=c(0,11), main=title, xlab ="Rating") 
+}
+
+```
+
+```{r functions to gather demographic info, include=FALSE}
+#for table generation below!
+gender_0 = data.frame(table(participants0$demo_gender))
+age_0 = data.frame(table(participants0$demo_age))
+ethn_0 = data.frame(table(participants0$demo_ethn))
+educ_0 = data.frame(table(participants0$demo_educ))
+
+gender_1 = data.frame(table(participants1$demo_gender))
+age_1 = data.frame(table(participants1$demo_age))
+ethn_1 = data.frame(table(participants1$demo_ethn))
+educ_1 = data.frame(table(participants1$demo_educ))
+
+gender_2 = data.frame(table(participants2$demo_gender))
+age_2 = data.frame(table(participants2$demo_age))
+ethn_2 = data.frame(table(participants2$demo_ethn))
+educ_2 = data.frame(table(participants2$demo_educ))
+
+gender_f = data.frame(table(full_participants$demo_gender))
+age_f = data.frame(table(full_participants$demo_age))
+ethn_f = data.frame(table(full_participants$demo_ethn))
+educ_f = data.frame(table(full_participants$demo_educ))
+
+
+tab_v <- function(tab, field) {
+  val = (tab[tab[1] == field][2])
+  if(is.na(val)) {
+    val = '0'
+  }
+    return(val)
+}
+```
+
+
+
+## Section 3.6: Demographics Background of Participants
+```{=latex}
+\begin{table}[H]  
+\small  
+\begin{tabularx}{\columnwidth}{X r r r r} 
+\hline 
+Attributes & None & Soft & Hard & \textbf{Total} \\  
+\hline 
+\multicolumn{5}{l}{Gender} \\
+\hspace{3mm}Female           & `r sprintf("%s", tab_v(gender_0,"Female"))`  & `r sprintf("%s", tab_v(gender_1,"Female"))`  & `r sprintf("%s", tab_v(gender_2,"Female"))`  & \textbf{`r sprintf("%s", tab_v(gender_f,"Female"))`} \\   
+\hspace{3mm}Male              & `r sprintf("%s", tab_v(gender_0,"Male"))`  & `r sprintf("%s", tab_v(gender_1,"Male"))`  & `r sprintf("%s", tab_v(gender_2,"Male"))`  & \textbf{`r sprintf("%s", tab_v(gender_f,"Male"))`} \\   
+\hspace{3mm}Non-Binary        & `r sprintf("%s", tab_v(gender_0,"Non-binary"))`  & `r sprintf("%s", tab_v(gender_1,"Non-binary"))`  & `r sprintf("%s", tab_v(gender_2,"Non-binary"))`  & \textbf{`r sprintf("%s", tab_v(gender_f,"Non-binary"))`} \\   
+\hspace{3mm}Prefer not to say  & `r sprintf("%s", tab_v(gender_0,"Did not disclose"))`  & `r sprintf("%s", tab_v(gender_1,"Did not disclose"))`  & `r sprintf("%s", tab_v(gender_2,"Did not disclose"))`  & \textbf{`r sprintf("%s", tab_v(gender_f,"Did not disclose"))`} \\  
+\hline 
+\multicolumn{5}{l}{Age} \\
+\hspace{3mm}18-20 &  `r sprintf("%s", tab_v(age_0,"18-20"))` &  `r sprintf("%s", tab_v(age_1,"18-20"))` & `r sprintf("%s", tab_v(age_2,"18-20"))`  & \textbf{`r sprintf("%s", tab_v(age_f,"18-20"))`}\\ 
+\hspace{3mm}20-24 &  `r sprintf("%s", tab_v(age_0,"20-24"))` &  `r sprintf("%s", tab_v(age_1,"20-24"))` & `r sprintf("%s", tab_v(age_2,"20-24"))`  & \textbf{`r sprintf("%s", tab_v(age_f,"20-24"))`}\\
+\hspace{3mm}25-29 &  `r sprintf("%s", tab_v(age_0,"25-29"))` &  `r sprintf("%s", tab_v(age_1,"25-29"))` & `r sprintf("%s", tab_v(age_2,"25-29"))`  & \textbf{`r sprintf("%s", tab_v(age_f,"25-29"))`}\\  
+\hspace{3mm}30-34 &  `r sprintf("%s", tab_v(age_0,"30-34"))` &  `r sprintf("%s", tab_v(age_1,"30-34"))` & `r sprintf("%s", tab_v(age_2,"30-34"))`  & \textbf{`r sprintf("%s", tab_v(age_f,"30-34"))`}\\  
+\hspace{3mm}35-39 &  `r sprintf("%s", tab_v(age_0,"35-39"))` &  `r sprintf("%s", tab_v(age_1,"35-39"))` & `r sprintf("%s", tab_v(age_2,"35-39"))`  & \textbf{`r sprintf("%s", tab_v(age_f,"35-39"))`}\\   
+\hspace{3mm}40-44 &  `r sprintf("%s", tab_v(age_0,"40-44"))` &  `r sprintf("%s", tab_v(age_1,"40-44"))` & `r sprintf("%s", tab_v(age_2,"40-44"))`  & \textbf{`r sprintf("%s", tab_v(age_f,"40-44"))`}\\  
+\hspace{3mm}45-49 &  `r sprintf("%s", tab_v(age_0,"45-49"))` &  `r sprintf("%s", tab_v(age_1,"45-49"))` & `r sprintf("%s", tab_v(age_2,"45-49"))`  & \textbf{`r sprintf("%s", tab_v(age_f,"45-49"))`}\\  
+\hspace{3mm}50-54 &  `r sprintf("%s", tab_v(age_0,"50-54"))` &  `r sprintf("%s", tab_v(age_1,"50-54"))` & `r sprintf("%s", tab_v(age_2,"50-54"))`  & \textbf{`r sprintf("%s", tab_v(age_f,"50-54"))`}\\  
+\hspace{3mm}55-59 &  `r sprintf("%s", tab_v(age_0,"55-59"))` &  `r sprintf("%s", tab_v(age_1,"55-59"))` & `r sprintf("%s", tab_v(age_2,"55-59"))`  & \textbf{`r sprintf("%s", tab_v(age_f,"55-59"))`}\\  
+\hspace{3mm}60-64 &  `r sprintf("%s", tab_v(age_0,"60-64"))` &  `r sprintf("%s", tab_v(age_1,"60-64"))` & `r sprintf("%s", tab_v(age_2,"60-64"))`  & \textbf{`r sprintf("%s", tab_v(age_f,"60-64"))`}\\  
+\hspace{3mm}65-69 &  `r sprintf("%s", tab_v(age_0,"65-69"))` &  `r sprintf("%s", tab_v(age_1,"65-69"))` & `r sprintf("%s", tab_v(age_2,"65-69"))`  & \textbf{`r sprintf("%s", tab_v(age_f,"65-69"))`}\\  
+\hspace{3mm}70+ &    `r sprintf("%s", tab_v(age_0,"70+"))` &  `r sprintf("%s", tab_v(age_1,"70+"))` & `r sprintf("%s", tab_v(age_2,"70+"))`  & \textbf{`r sprintf("%s", tab_v(age_f,"70+"))`}\\  
+\hspace{3mm}Prefer not to say  & `r sprintf("%s", tab_v(age_0,"Did not disclose"))` &  `r sprintf("%s", tab_v(age_1,"Did not disclose"))` & `r sprintf("%s", tab_v(age_2,"Did not disclose"))`  & \textbf{`r sprintf("%s", tab_v(age_f,"Did not disclose"))`}\\ 
+\hline 
+\multicolumn{5}{l}{Ethnicity} \\ 
+ \hspace{3mm}White     & `r sprintf("%s", tab_v(ethn_0,"White"))` &  `r sprintf("%s", tab_v(ethn_1,"White"))` & `r sprintf("%s", tab_v(ethn_2,"White"))`  & \textbf{`r sprintf("%s", tab_v(ethn_f,"White"))`}\\   
+\hspace{3mm}Hispanic
+ or Latino   & `r sprintf("%s", tab_v(ethn_0,"Hispanic"))` &  `r sprintf("%s", tab_v(ethn_1,"Hispanic"))` & `r sprintf("%s", tab_v(ethn_2,"Hispanic"))`  & \textbf{`r sprintf("%s", tab_v(ethn_f,"Hispanic"))`}\\  
+\hspace{3mm}Black or African
+ American    & `r sprintf("%s", tab_v(ethn_0,"Black"))` &  `r sprintf("%s", tab_v(ethn_1,"Black"))` & `r sprintf("%s", tab_v(ethn_2,"Black"))`  & \textbf{`r sprintf("%s", tab_v(ethn_f,"Black"))`}\\  
+\hspace{3mm}Asian    & `r sprintf("%s", tab_v(ethn_0,"Asian"))` &  `r sprintf("%s", tab_v(ethn_1,"Asian"))` & `r sprintf("%s", tab_v(ethn_2,"Asian"))`  & \textbf{`r sprintf("%s", tab_v(ethn_f,"Asian"))`}\\  
+\hspace{3mm}American Indian or Alaska 
+ Native      & `r sprintf("%s", tab_v(ethn_0,"American Indian"))` &  `r sprintf("%s", tab_v(ethn_1,"American Indian"))` & `r sprintf("%s", tab_v(ethn_2,"American Indian"))`  & \textbf{`r sprintf("%s", tab_v(ethn_f,"American Indian"))`}\\  
+\hspace{3mm}Native Hawaiian or Pacific 
+ Islander    & `r sprintf("%s", tab_v(ethn_0,"Pacific Islander"))` &  `r sprintf("%s", tab_v(ethn_1,"Pacific Islander"))` & `r sprintf("%s", tab_v(ethn_2,"Pacific Islander"))`  & \textbf{`r sprintf("%s", tab_v(ethn_f,"Pacific Islander"))`}\\  
+\hspace{3mm}Other        
+            & `r sprintf("%s", tab_v(ethn_0,"Other"))` &  `r sprintf("%s", tab_v(ethn_1,"Other"))` & `r sprintf("%s", tab_v(ethn_2,"Other"))`  & \textbf{`r sprintf("%s", tab_v(ethn_f,"Other"))`}\\  
+\hspace{3mm}Prefer not to say        
+            & `r sprintf("%s", tab_v(ethn_0,"Did not disclose"))` &  `r sprintf("%s", tab_v(ethn_1,"Did not disclose"))` & `r sprintf("%s", tab_v(ethn_2,"Did not disclose"))`  & \textbf{`r sprintf("%s", tab_v(ethn_f,"Did not disclose"))`}\\  
+\hline 
+
+ \multicolumn{5}{l}{Highest Education} \\  
+\hspace{3mm}High School Graduate or 
+ Less          & `r sprintf("%s", tab_v(educ_0,"HS"))` &  `r sprintf("%s", tab_v(educ_1,"HS"))` & `r sprintf("%s", tab_v(educ_2,"HS"))`  & \textbf{`r sprintf("%s", tab_v(educ_f,"HS"))`}\\    
+ \hspace{3mm}Some College or Two Year 
+ Degree        & `r sprintf("%s", tab_v(educ_0,"AS"))` &  `r sprintf("%s", tab_v(educ_1,"AS"))` & `r sprintf("%s", tab_v(educ_2,"AS"))`  & \textbf{`r sprintf("%s", tab_v(educ_f,"AS"))`}\\    
+\hspace{3mm}Bachelors  & `r sprintf("%s", tab_v(educ_0,"BS"))` &  `r sprintf("%s", tab_v(educ_1,"BS"))` & `r sprintf("%s", tab_v(educ_2,"BS"))`  & \textbf{`r sprintf("%s", tab_v(educ_f,"BS"))`}\\    
+\hspace{3mm}Masters    & `r sprintf("%s", tab_v(educ_0,"MS"))` &  `r sprintf("%s", tab_v(educ_1,"MS"))` & `r sprintf("%s", tab_v(educ_2,"MS"))`  & \textbf{`r sprintf("%s", tab_v(educ_f,"MS"))`}\\   
+\hspace{3mm}PhD         & `r sprintf("%s", tab_v(educ_0,"PhD"))` &  `r sprintf("%s", tab_v(educ_1,"PhD"))` & `r sprintf("%s", tab_v(educ_2,"PhD"))`  & \textbf{`r sprintf("%s", tab_v(educ_f,"PhD"))`}\\    
+\hspace{3mm}Professional 
+ Degree        & `r sprintf("%s", tab_v(educ_0,"Prof."))` &  `r sprintf("%s", tab_v(educ_1,"Prof."))` & `r sprintf("%s", tab_v(educ_2,"Prof."))`  & \textbf{`r sprintf("%s", tab_v(educ_f,"Prof."))`}\\    
+\hspace{3mm}Prefer not to say        
+               & `r sprintf("%s", tab_v(educ_0,"Did not disclose"))` &  `r sprintf("%s", tab_v(educ_1,"Did not disclose"))` & `r sprintf("%s", tab_v(educ_2,"Did not disclose"))`  & \textbf{`r sprintf("%s", tab_v(educ_f,"Did not disclose"))`}\\    
+            \hline
+\textbf{Total} & `r sprintf("%s", nrow(participants0))` & `r sprintf("%s", nrow(participants1))` & `r sprintf("%s", nrow(participants2))` & \textbf{`r sprintf("%s", nrow(full_participants))`}  \\  
+\hline 
+\end{tabularx} 
+ 
+\caption*{
+\textbf{Demographics} --
+\textmd{{\small 
+     We show the demographics information of participants for different prompt treatment groups.}}}
+\end{table}
+```
+
+## Section 3.6: Time distribution of participants
+```{r time distribution of participants, echo=FALSE}
+remove_outliers <- function(x, na.rm = TRUE, ...) {
+  qnt <- quantile(x, probs=c(.25, .75), na.rm = na.rm, ...)
+  H <- 1.5 * IQR(x, na.rm = na.rm)
+  y <- x
+  y[x < (qnt[1] - H)] <- NA
+  y[x > (qnt[2] + H)] <- NA
+  y
+}
+
+#see time distribution of results, also for different prompts
+#return median time which we report
+show_time_dist <- function (participants) {
+  processed_times <- remove_outliers(participants$totalMin)
+  print(summary(processed_times))
+  return(median(processed_times, na.rm=TRUE))
+}
+
+median_time <- show_time_dist(full_participants)
+n <-nrow(full_participants)
+```
+The median time spend on the survey for $n=`r sprintf("%d", n)`$ participants was `r sprintf("%0.2f",median_time)` minutes.
+
+## Section 4.1: pairwise correlation of measured factors (Ability, Benevolence, Integrity)
+```{r Correlation between trust metrics, fig.width=6, fig.height=8, message=FALSE, echo=FALSE}
+
+profiles <- full_profiles
+
+#correlation tests
+A_B_corr <- cor.test(x=profiles$A., y=profiles$B., method=c("pearson"))
+I_B_corr <- cor.test(x=profiles$I., y=profiles$B., method=c("pearson"))
+A_I_corr <- cor.test(x=profiles$A., y=profiles$I., method=c("pearson"))
+```
+Ability-Benevolence Correlation: `r sprintf("%0.5f", A_B_corr[["estimate"]])`, p-value: `r sprintf("%s\n", format_p(A_B_corr[["p.value"]]))`
+Integrity-Benevolence Correlation: `r sprintf("%0.5f", I_B_corr[["estimate"]])`, p-value: `r sprintf("%s\n", format_p(I_B_corr[["p.value"]]))`
+Ability-Integrity Correlation: `r sprintf("%0.5f", A_I_corr[["estimate"]])`, p-value: `r sprintf("%s", format_p(A_I_corr[["p.value"]]))`
+
+```{r Plot correlation between trust metrics, fig.width=6, fig.height=6, message=FALSE, echo=FALSE}
+#plot correlation
+p1 <- ggscatter(profiles, x="A.", y="B.",
+              conf.int=TRUE, cor.coef=FALSE, cor.method="pearson",
+              xlab="Ability", ylab="Benevolence",
+              add="reg.line",
+              alpha=0.0
+          ) + geom_jitter(alpha=0.5, color='red')  + scale_x_continuous(breaks = get_breaks(n = 6)) + scale_y_continuous(breaks = get_breaks(n = 6)) +
+  theme(
+      legend.key.size = unit(2, 'cm'),
+      panel.background = element_rect(fill = "white", colour = NA), 
+      panel.border = element_rect(fill = NA, colour = "grey20"), 
+      panel.grid = element_line(colour = "grey60"), 
+      panel.grid.minor = element_line(size = rel(0.5)), 
+      strip.background = element_rect(fill = "grey85", colour = "grey20"), 
+      legend.key = element_rect(fill = "white", colour = NA), 
+      complete = TRUE,
+      #fonts
+      axis.text=element_text(size=14),
+      axis.title=element_text(size=18,face="bold"),
+      legend.title = element_text(size=15), 
+      legend.text = element_text(size=15), 
+      ) 
+p2 <- ggscatter(profiles, x="I.", y="B.",
+              conf.int=TRUE, cor.coef=FALSE, cor.method="pearson",
+              xlab="Integrity", ylab="Benevolence",
+              add="reg.line",
+              alpha=0.0
+          ) + geom_jitter(alpha=0.5, color='green')  + scale_x_continuous(breaks = get_breaks(n = 6)) + scale_y_continuous(breaks = get_breaks(n = 6)) +
+  theme(
+      legend.key.size = unit(2, 'cm'),
+      panel.background = element_rect(fill = "white", colour = NA), 
+      panel.border = element_rect(fill = NA, colour = "grey20"), 
+      panel.grid = element_line(colour = "grey60"), 
+      panel.grid.minor = element_line(size = rel(0.5)), 
+      strip.background = element_rect(fill = "grey85", colour = "grey20"), 
+      legend.key = element_rect(fill = "white", colour = NA), 
+      complete = TRUE,
+      #fonts
+      axis.text=element_text(size=14),
+      axis.title=element_text(size=18,face="bold"),
+      legend.title = element_text(size=15), 
+      legend.text = element_text(size=15), 
+      ) 
+
+p3 <- ggscatter(profiles, x="A.", y="I.",
+              conf.int=TRUE, cor.coef=FALSE, cor.method="pearson",
+              xlab="Ability", ylab="Integrity",
+              add="reg.line",
+              alpha=0.0
+          ) +
+  geom_jitter(alpha=0.5, color='blue') + 
+  scale_x_continuous(breaks = get_breaks(n = 6)) + 
+  scale_y_continuous(breaks = get_breaks(n = 6)) +
+  theme(
+      legend.key.size = unit(2, 'cm'),
+      panel.background = element_rect(fill = "white", colour = NA), 
+      panel.border = element_rect(fill = NA, colour = "grey20"), 
+      panel.grid = element_line(colour = "grey60"), 
+      panel.grid.minor = element_line(size = rel(0.5)), 
+      strip.background = element_rect(fill = "grey85", colour = "grey20"), 
+      legend.key = element_rect(fill = "white", colour = NA), 
+      complete = TRUE,
+      #fonts
+      axis.text=element_text(size=14),
+      axis.title=element_text(size=18,face="bold"),
+      legend.title = element_text(size=15), 
+      legend.text = element_text(size=15), 
+      ) 
+  
+  p <- ggarrange(p1,p2,p3, ncol=1, nrow=3)
+  
+  print(p)
+
+
+
+```
+
+
+## Section 4.1: Figure 5
+```{r Plot trust by condition, fig.width=14, fig.height=6, echo=FALSE, warning=FALSE}
+plot_trust <- function(profiles, by){
+  #plot ratings of each condition
+    
+  plot <- ggplot(profiles, aes(x=p_subcond, y=trust)) +
+    geom_boxplot(aes(fill=!!(ensym(by))),position=position_dodge(.9)) + 
+    scale_fill_manual(values=c("#fee6ce", "#fdae6b", "#e6550d")) +
+    stat_summary(fun=mean, geom="point", shape=20, size=6, color="black", aes(group=!!(ensym(by))), position=position_dodge(.9) ) +
+    theme(
+        legend.key.size = unit(2, 'cm'),
+        panel.background = element_rect(fill = "white", colour = NA), 
+        panel.border = element_rect(fill = NA, colour = "grey20"), 
+        panel.grid = element_line(colour = "grey60"), 
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+
+        panel.grid.minor = element_line(size = rel(0.5)), 
+        strip.background = element_rect(fill = "grey85", colour = "grey20"), 
+        legend.key = element_rect(fill = "white", colour = NA), 
+        complete = TRUE,
+        #fonts
+        axis.text=element_text(size=20),
+        axis.title=element_text(size=25,face="bold"),
+        legend.title = element_text(size=20), 
+        legend.text = element_text(size=15), 
+      ) +
+    guides(fill=guide_legend(title="Prompt"))+
+    xlab(col_to_readable["p_subcond"]) + ylab("Trust") 
+  
+    print(plot)
+}
+
+plot_trust(full_profiles, "prompt")
+trust_by_subcond = full_profiles %>% 
+  group_by(prompt) %>%
+  summarise(trust_mean=mean(trust), trust_standard_dev=sd(trust))
+#round for readability
+trust_by_subcond %<>% mutate_at(vars(trust_mean, trust_standard_dev), funs(round(., 1)))
+```
+
+### Descriptive statistics of Figure 5
+```{r Descriptive stats of fig 5, echo=FALSE}
+kable(trust_by_subcond)
+```
+
+```{r Center data and filter data for model processing, include=FALSE}
+model_data <- full_profiles
+model_data$base_trust <- model_data$base_trust - mean(model_data$base_trust)
+
+#remove participants who didn't answer required q's for lmer
+model_data %<>%
+  filter(demo_age != "Did not disclose", demo_gender != "Did not disclose")
+
+#print how many people were removed
+print_removed_model_data <- model_data
+print_removed_model_data %<>%
+  filter(demo_age == "Did not disclose" | demo_gender == "Did not disclose")
+sprintf("Removed %d partipants from modeling analysis.", nrow(print_removed_model_data))
+```
+
+## Section 4.1: Table 1 
+```{r LMER model for Trust, include=FALSE}
+modelTrust <- lmer(trust ~  relevel(prompt, ref = "Soft") + 
+                     p_subcond + base_trust 
+                   + relevel(demo_gender, ref = "Female") 
+                   + demo_num_age +
+                   + (1 | id)
+                  ,  data=model_data, REML=FALSE)
+
+
+trust_sum <- summary(modelTrust)
+```
+
+```{=latex}
+\begin{table}[H] \centering 
+\small
+\begin{tabularx}{\columnwidth}{X r r l}
+
+\toprule
+Variable & Estimate & Std. Err. & \multicolumn{1}{c}{p} \\  
+\midrule  
+  
+{\it Intercept} & 
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][1,1])`} &
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][1,2])`} &
+  {`r format_p(trust_sum[["coefficients"]][1,5])`}*** \\  
+\midrule  
+  
+\multicolumn{4}{l}{Prompt (Reference = {Soft Prompt})}\\
+\hspace{3mm}{No Prompt} & 
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][2,1])`} &
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][2,2])`} &
+  {`r format_p(trust_sum[["coefficients"]][2,5])`}* \\  
+\hspace{3mm}{Hard Prompt} &  
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][3,1])`} &
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][3,2])`} &
+  {`r format_p(trust_sum[["coefficients"]][3,5])`}* \\  
+\midrule  
+  
+\multicolumn{4}{l}{Artifact (Reference = {Consistent})}\\
+\hspace{3mm}{Inter Image} &  
+  `r sprintf("%0.3f", trust_sum[["coefficients"]][4,1])` &
+  `r sprintf("%0.3f", trust_sum[["coefficients"]][4,2])` &
+  `r format_p(trust_sum[["coefficients"]][4,5])` \\  
+\hspace{3mm}{Inter Text}  &  
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][5,1])`} &
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][5,2])`} &
+  {`r format_p(trust_sum[["coefficients"]][5,5])`}*** \\  
+\hspace{3mm}{Intra Image}  &  
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][6,1])`} &
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][6,2])`} &
+  {`r format_p(trust_sum[["coefficients"]][6,5])`}*** \\  
+\hspace{3mm}{Intra Text}  &  
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][7,1])`} &
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][7,2])`} &
+  {`r format_p(trust_sum[["coefficients"]][7,5])`}*** \\  
+  \midrule  
+    
+\multicolumn{4}{l}{Gender (Reference = {Female})}\\  
+  \hspace{3mm}{Male} &
+  { `r sprintf("%0.3f", trust_sum[["coefficients"]][9,1])`} &
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][9,2])`} &
+  {`r format_p(trust_sum[["coefficients"]][9,5])`} \\  
+  \hspace{3mm}{Non-Binary} &
+  { `r sprintf("%0.3f", trust_sum[["coefficients"]][10,1])`} &
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][10,2])`} &
+  {`r format_p(trust_sum[["coefficients"]][10,5])`} \\  
+  \midrule  
+    
+
+{Age}  &  
+  `r sprintf("%0.3f", trust_sum[["coefficients"]][11,1])` &
+  `r sprintf("%0.3f", trust_sum[["coefficients"]][11,2])` &
+  `r format_p(trust_sum[["coefficients"]][11,5])` \\ 
+  \midrule  
+{Generalized Trust}  &  
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][8,1])`} &
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][8,2])`} &
+  {`r format_p(trust_sum[["coefficients"]][8,5])`}*** \\  
+  \bottomrule  
+\end{tabularx}
+ \caption*{
+ \textbf{Trust Rating Analysis} -- %
+    \textmd{{\small 
+     Linear mixed-effects regression model. 
+     The unit for estimate and standard error is the aggregated trust score. 
+     ``Age'' (in units of 5 years) and ``Generalized Trust'' are numeric and thus do not have a reference group.  
+     Significance is denoted by ***~($p < 0.001$), **~($p < 0.01$), and *~($p < 0.05$).} 
+    }}
+\end{table}
+```
+
+
+## Section 4.1: ANOVA Test for differences in consistent trust
+```{r Aeperate consistent profiles for testing, message=FALSE, echo=FALSE}
+consistent_data <- model_data
+consistent_data %<>%
+  filter(p_subcond == "Consistent")
+
+#gather trust by prompt 
+anova_trust_by_subcond = consistent_data %>% 
+  group_by(prompt, p_subcond) %>%
+  summarise(trust_mean=mean(trust), trust_standard_dev=sd(trust))
+
+#round for readability
+anova_trust_by_subcond %<>% mutate_at(vars(trust_mean, trust_standard_dev), funs(round(., 1)))
+kable(anova_trust_by_subcond)
+```
+### ANOVA results
+```{r Test for trust difference over consistent under different prompts, message=FALSE, echo=FALSE}
+trust.aov <- aov(trust ~ prompt,data = consistent_data)
+print(summary(trust.aov))
+```
+
+
+## Section 4.2: Figure 6 
+```{r Plot acceptance by condition, fig.width=10, fig.height=6, echo=FALSE,  message=FALSE,}
+
+profiles <- full_profiles
+accept_by_subcond = profiles %>%
+  group_by(prompt, p_subcond, req) %>%
+  summarise(Percentage=n()) %>%
+  group_by(prompt, p_subcond) %>%
+  mutate(Percentage = Percentage/sum(Percentage)*100)
+
+accept_by_subcond <- subset(accept_by_subcond, req=="Accept")
+
+p <- ggplot(accept_by_subcond, aes(y=Percentage, x=p_subcond)) +
+  geom_bar(stat = "identity",
+                        aes(fill=prompt), 
+                        colour = 'black',
+                        position=position_dodge(.9))  + 
+  scale_fill_manual(values=c("#fee6ce", "#fdae6b", "#e6550d")) +
+  theme(
+      legend.key.size = unit(2, 'cm'),
+      panel.background = element_rect(fill = "white", colour = NA), 
+      panel.border = element_rect(fill = NA, colour = "grey20"), 
+      panel.grid = element_line(colour = "grey60"), 
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor.x = element_blank(),        
+      panel.grid.minor = element_line(size = rel(0.5)), 
+      strip.background = element_rect(fill = "grey85", colour = "grey20"), 
+      legend.key = element_rect(fill = "white", colour = NA), 
+      complete = TRUE,
+      #fonts
+      axis.text=element_text(size=20),
+      axis.title=element_text(size=25,face="bold"),
+      legend.title = element_text(size=20), 
+      legend.text = element_text(size=15), 
+      ) +
+    guides(fill=guide_legend(title="Prompt")) +
+  ylim(0,100) +
+  xlab(col_to_readable["p_subcond"]) + ylab("Acceptance (%)") #+ ggtitle(sprintf("Profile Acceptance")) 
+plot(p)
+```
+
+### Descriptive statistics for Figure 6
+```{r descriptive stats of fig6, message=FALSE, echo=FALSE, results='asis'}
+  accept_by_subcond %<>% mutate_at(vars(Percentage), funs(round(., 0)))
+
+  kable(accept_by_subcond)
+```
+
+
+## Section 4.2: Table 2
+```{r GLMER model for acceptance rate, include=FALSE}
+#make accept binary for model
+model_data$req_num <- as.factor(ifelse(model_data$req=="Accept", 1, 0))
+
+modelAcceptance = glmer(req_num ~ relevel(prompt, ref = "Soft") +  
+                        p_subcond + base_trust + 
+                        relevel(demo_gender, ref = "Female") + 
+                        demo_num_age + 
+                        (1 | id),
+                       data=model_data, family=binomial(),
+                       control=glmerControl(optimizer="bobyqa",optCtrl=list(maxfun=2e5))
+                       )
+
+accept_sum <- summary(modelAcceptance)
+```
+
+
+
+```{=latex}
+\begin{table}[H] \centering 
+\small
+\begin{tabularx}{\columnwidth}{X r r l}
+
+\toprule
+Variable & Estimate (Prob) & Std. Err. (Prob) & \multicolumn{1}{c}{p-value} \\  
+\midrule  
+  
+{\it Intercept} & 
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][1,1])`} &
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][1,2])`} &
+   {`r format_p(accept_sum[["coefficients"]][1,4])`}***
+
+  \\  
+\midrule  
+ 
+\multicolumn{4}{l}{Prompt (Reference = {Soft Prompt})}\\
+\hspace{3mm}{No Prompt} & 
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][2,1])`} &
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][2,2])`} &
+  {`r format_p(accept_sum[["coefficients"]][2,4])`}*** \\  
+\hspace{3mm}{Hard Prompt} &  
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][3,1])`} &
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][3,2])`} &
+  {`r format_p(accept_sum[["coefficients"]][3,4])`} \\  
+\midrule  
+  
+\multicolumn{4}{l}{Artifact (Reference = {Consistent})}\\
+\hspace{3mm}{Inter Image} &  
+  `r sprintf("%0.3f", accept_sum[["coefficients"]][4,1])` &
+  `r sprintf("%0.3f", accept_sum[["coefficients"]][4,2])` &
+  `r format_p(accept_sum[["coefficients"]][4,4])`* \\  
+\hspace{3mm}{Inter Text}  &  
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][5,1])`} &
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][5,2])`} &
+  {`r format_p(accept_sum[["coefficients"]][5,4])`}*** \\  
+\hspace{3mm}{Intra Image}  &  
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][6,1])`} &
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][6,2])`} &
+  {`r format_p(accept_sum[["coefficients"]][6,4])`}*** \\  
+\hspace{3mm}{Intra Text}  &  
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][7,1])`} &
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][7,2])`} &
+  {`r format_p(accept_sum[["coefficients"]][7,4])`}*** \\  
+  \midrule  
+    
+\multicolumn{4}{l}{Gender (Reference = {Female})}\\  
+  \hspace{3mm}{Male} &
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][9,1])`} &
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][9,2])`} &
+  {`r format_p(accept_sum[["coefficients"]][9,4])`} \\  
+   \hspace{3mm}{Non-Binary} &
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][10,1])`} &
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][10,2])`} &
+  {`r format_p(accept_sum[["coefficients"]][10,4])`} \\  
+  \midrule  
+    
+
+{Age}  &  
+  `r sprintf("%0.3f", accept_sum[["coefficients"]][11,1])` &
+  `r sprintf("%0.3f", accept_sum[["coefficients"]][11,2])` &
+  `r format_p(accept_sum[["coefficients"]][11,4])` \\ 
+\midrule  
+{Generalized Trust}  &  
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][8,1])`} &
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][8,2])`} &
+  {`r format_p(accept_sum[["coefficients"]][8,4])`}*** \\  
+  \bottomrule  
+\end{tabularx}
+ \caption*{
+ \textbf{Request Acceptance Analysis} -- %
+    \textmd{{\small 
+     Logistic mixed effects regression model. 
+     The unit for estimate and standard error is log odds scaled.
+      Significance is denoted by ***~($p < 0.001$), **~($p < 0.01$), and *~($p < 0.05$).}}
+}
+\end{table}
+```
+
+## Section 4.3: Artifact to Artifact trust comparison 
+```{r Factor to factor comparison: trust, message=FALSE, echo=FALSE}
+#defining contrasts for factor to factor comparisons
+inter_img = c(0, 1, 0, 0, 0)
+inter_txt = c(0, 0, 1, 0, 0)
+intra_img = c(0, 0, 0, 1, 0)
+intra_txt = c(0, 0, 0, 0, 1)
+
+
+modelTrust_factors <- lmer(trust ~  prompt +
+                     p_subcond + base_trust + 
+                     demo_gender
+                    + demo_num_age +
+                    + (1 | id)
+                    ,  data=model_data, REML=FALSE)
+trust_sum.e.p_subcond <- emmeans(modelTrust_factors, "p_subcond")
+
+#compare other factors via contrasts
+kable(contrast(trust_sum.e.p_subcond, adjust = "bonferroni", method = list("Inter Image - Inter Text" = inter_img - inter_txt,
+                                               "Inter Image - Intra Image" = inter_img - intra_img,
+                                               "Inter Image - Intra Text" = inter_img - intra_txt,
+                                               "Inter Text - Intra Image" = inter_txt - intra_img,
+                                               "Inter Text - Intra Text" = inter_txt - intra_txt,
+                                               "Intra Image - Intra Text" = intra_img - intra_txt
+                                               )))
+```
+
+
+
+## Section 4.3: Artifact to Artifact comparison for acceptance rate 
+```{r Factor to factor comparison: acceptance rate, message=FALSE, echo=FALSE}
+#defining contrasts for factor to factor comparisons
+inter_img = c(0, 1, 0, 0, 0)
+inter_txt = c(0, 0, 1, 0, 0)
+intra_img = c(0, 0, 0, 1, 0)
+intra_txt = c(0, 0, 0, 0, 1)
+
+modelAcceptance_factors = glmer(req_num ~ prompt +  
+                        p_subcond + base_trust + 
+                        demo_gender + 
+                        demo_num_age + 
+                        (1 | id),
+                       data=model_data, family=binomial(),control=glmerControl(optimizer="bobyqa",optCtrl=list(maxfun=2e5)))
+accept_sum.e.p_subcond <- emmeans(modelAcceptance_factors, "p_subcond")
+
+#compare other factors via contrasts
+kable(contrast(accept_sum.e.p_subcond, adjust="bonferroni", method = list("Inter Image - Inter Text" = inter_img - inter_txt,
+                                               "Inter Image - Intra Image" = inter_img - intra_img,
+                                               "Inter Image - Intra Text" = inter_img - intra_txt,
+                                               "Inter Text - Intra Image" = inter_txt - intra_img,
+                                               "Inter Text - Intra Text" = inter_txt - intra_txt,
+                                               "Intra Image - Intra Text" = intra_img - intra_txt
+                                               )))
+```
+
+## Section 5.1: Table 3
+```{=latex}
+\begin{table}[H]
+\centering
+\footnotesize
+\begin{tabularx}{\columnwidth}{X r r r r}
+\toprule 
+Metrics & & No & Soft & Hard \\ 
+\midrule
+\multicolumn{2}{l}{Profile Image (expand)}   & `r sprintf("%0.f\\%%", 100*(sum(profiles0$expandedPortrait=='TRUE', na.rm=TRUE))/nrow(profiles0))`    & `r sprintf("%0.f\\%%", 100*(sum(profiles1$expandedPortrait=='TRUE', na.rm=TRUE))/nrow(profiles1))`   & `r sprintf("%0.f\\%%", 100*(sum(profiles2$expandedPortrait=='TRUE', na.rm=TRUE))/nrow(profiles2))`    \\ 
+\multicolumn{2}{l}{Experience (expand)}   & `r sprintf("%0.f\\%%", 100*(sum(profiles0$expandedExpr=='TRUE', na.rm=TRUE))/nrow(profiles0))`   & `r sprintf("%0.f\\%%", 100*(sum(profiles1$expandedExpr=='TRUE', na.rm=TRUE))/nrow(profiles1))`    & `r sprintf("%0.f\\%%", 100*(sum(profiles2$expandedExpr=='TRUE', na.rm=TRUE))/nrow(profiles2))`   \\ 
+\midrule
+\multirow{2}{*}{About (hover over)}  
+& Mean   & `r sprintf("%0.f",mean(profiles0$hoveredSummTime, na.rm=TRUE))` & `r sprintf("%0.f",mean(profiles1$hoveredSummTime,  na.rm=TRUE))` & `r sprintf("%0.f",mean(profiles2$hoveredSummTime, na.rm=TRUE))` \\ 
+& Median     & `r sprintf("%0.f", median(profiles0$hoveredSummTime, na.rm=TRUE))`     & `r sprintf("%0.f",median(profiles1$hoveredSummTime, na.rm=TRUE))`     & `r sprintf("%0.f",median(profiles2$hoveredSummTime, na.rm=TRUE))`     \\ 
+\midrule
+\multirow{2}{*}{Experience (hover over)}  
+& Mean  & `r sprintf("%0.f",mean(profiles0$hoveredExprTime, na.rm=TRUE))` & `r sprintf("%0.f",mean(profiles1$hoveredExprTime, na.rm=TRUE))` & `r sprintf("%0.f",mean(profiles2$hoveredExprTime, na.rm=TRUE))` \\ 
+& Median     & `r sprintf("%0.f",median(profiles0$hoveredExprTime, na.rm=TRUE))` & `r sprintf("%0.f",median(profiles1$hoveredExprTime, na.rm=TRUE))` & `r sprintf("%0.f",median(profiles2$hoveredExprTime, na.rm=TRUE))`   \\ 
+\midrule
+\multirow{2}{*}{Education (hover over)} 
+& Mean   & `r sprintf("%0.f",mean(profiles0$hoveredEduTime, na.rm=TRUE))` & `r sprintf("%0.f",mean(profiles1$hoveredEduTime, na.rm=TRUE))` & `r sprintf("%0.f",mean(profiles2$hoveredEduTime, na.rm=TRUE))` \\                                                                        
+&   Median     & `r sprintf("%0.f",median(profiles0$hoveredEduTime, na.rm=TRUE))` & `r sprintf("%0.f",median(profiles1$hoveredEduTime, na.rm=TRUE))` & `r sprintf("%0.f",median(profiles2$hoveredEduTime, na.rm=TRUE))`     \\ 
+\bottomrule
+\end{tabularx}
+\caption*{ \textbf{Mouse Tracking Results} -- \textmd{{\small 
+The top two rows report the percentage of participants that clicked on the UIs to expand profile images and the experience items. The bottom three rows report the mouse hover-over time (median and mean) in each UI section for ``About'', ``Experience'', and ``Education'' in milliseconds. 
+After the Hard prompt, users are more likely to look for artifacts in profile images and the ``About'' text.
+}}} 
+\vspace{-0.12in} 
+\end{table}
+```
+# Appendix B: Deepfake Profiles vs. Real-World Sybils
+```{r Read Sybil Data, include=FALSE}
+profiles0_sybil <- read.csv(file.path(sybil_study_data_path, study_prompt0, "profile_ratings.csv"))
+profiles0_sybil %<>%
+  mutate(prompt='Sybil-None')
+full_profiles_sybil <- profiles0_sybil
+full_profiles_sybil$prompt <- factor(full_profiles_sybil$prompt, levels = c("Sybil-None"))
+
+participants0_sybil <- read.csv(file.path(sybil_study_data_path, study_prompt0, "participant_result.csv"))
+full_participants_sybil <- participants0_sybil
+```
+
+```{r Clean Sybil Data, include=FALSE}
+head(full_profiles_sybil)
+full_profiles_sybil <- clean_profiles(full_profiles_sybil)
+full_participants_sybil <- clean_participants(full_participants_sybil)
+```
+
+$n=`r sprintf("%d", nrow(full_participants_sybil))`$ participants were included in the follow-up survey.
+
+```{r Center Sybil data and filter data for LMER model, include=FALSE}
+model_data_sybil <- full_profiles_sybil
+model_data_sybil$base_trust <- model_data_sybil$base_trust - mean(model_data_sybil$base_trust)
+
+
+model_data_sybil %<>%
+  filter(demo_age != "Did not disclose", demo_gender != "Did not disclose", demo_gender != "Non-binary")
+
+#print how many people were removed
+print_removed_model_data <- model_data_sybil
+print_removed_model_data %<>%
+  filter(demo_age == "Did not disclose" | demo_gender == "Did not disclose" | demo_gender == "Non-binary")
+sprintf("Removed %d partipants from modeling analysis.", nrow(print_removed_model_data))
+```
+
+## Appendix B: Figure 9
+```{r Plot Sybil acceptance by condition, fig.width=10, fig.height=6, message=FALSE, echo=FALSE}
+profiles <- full_profiles_sybil
+
+accept_by_subcond = profiles %>%
+  group_by(prompt, p_subcond, req) %>%
+  summarise(Percentage=n()) %>%
+  group_by(prompt, p_subcond) %>%
+  mutate(Percentage = Percentage/sum(Percentage)*100)
+         
+accept_by_subcond <- subset(accept_by_subcond, req=="Accept")
+
+
+p <- ggplot(accept_by_subcond, aes(y=Percentage, x=p_subcond)) +
+  geom_bar(stat = "identity",
+                        colour = 'black',
+                        position=position_dodge(.9))  +
+  theme(
+      legend.key.size = unit(2, 'cm'),
+      panel.background = element_rect(fill = "white", colour = NA), 
+      panel.border = element_rect(fill = NA, colour = "grey20"), 
+      panel.grid = element_line(colour = "grey60"), 
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor.x = element_blank(),
+      panel.grid.minor = element_line(size = rel(0.5)), 
+      strip.background = element_rect(fill = "grey85", colour = "grey20"), 
+      legend.key = element_rect(fill = "white", colour = NA), 
+      complete = TRUE,
+      #fonts
+      axis.text=element_text(size=20),
+      axis.title=element_text(size=25,face="bold"),
+      legend.title = element_text(size=20), 
+      legend.text = element_text(size=15), 
+      ) +
+  guides(fill=guide_legend(title="Prompt")) +
+  ylim(0,100) +
+  xlab(col_to_readable["p_subcond"]) + ylab("Acceptance (%)") #+ ggtitle(sprintf("Profile Acceptance")) 
+plot(p)
+```
+
+### Descriptive statistics for Figure 9
+```{r descriptive stats of fig9, message=FALSE, echo=FALSE, results='asis'}
+  accept_by_subcond %<>% mutate_at(vars(Percentage), funs(round(., 0)))
+
+  kable(accept_by_subcond)
+```
+
+
+
+## Appendix B: Table 4
+```{r GLMER model for Sybil acceptance rate, message=FALSE, echo=FALSE}
+#make accept binary for model
+model_data_sybil$req_num <- as.factor(ifelse(model_data_sybil$req=="Accept", 1, 0))
+modelAcceptance = glmer(req_num ~ relevel(p_subcond, ref="Sybil") + base_trust + 
+                        relevel(demo_gender, ref = "Female") + 
+                        demo_num_age + 
+                        (1 | id),
+                       data=model_data_sybil, family=binomial(),control=glmerControl(optimizer="bobyqa",optCtrl=list(maxfun=2e5)))
+
+accept_sum <- summary(modelAcceptance)
+```
+
+\begin{table}[H]
+\centering
+\small 
+\begin{tabularx}{\columnwidth}{X r r l}
+
+\toprule
+Variable & Estimate (Prob) & Std. Err. (Prob) & \multicolumn{1}{c}{p-value} \\  
+\midrule  
+  
+{\it Intercept} & 
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][1,1])`} &
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][1,2])`} &
+   {`r format_p(accept_sum[["coefficients"]][1,4])`}
+\\  
+\midrule  
+ 
+\multicolumn{4}{l}{Profile Type (Reference = {Sybil})}\\
+\hspace{3mm}{Inter Image} &  
+  `r sprintf("%0.3f", accept_sum[["coefficients"]][2,1])` &
+  `r sprintf("%0.3f", accept_sum[["coefficients"]][2,2])` &
+  `r format_p(accept_sum[["coefficients"]][2,4])`** \\  
+\hspace{3mm}{Inter Text}  &  
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][3,1])`} &
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][3,2])`} &
+  {`r format_p(accept_sum[["coefficients"]][3,4])`} \\  
+\hspace{3mm}{Intra Image}  &  
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][4,1])`} &
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][4,2])`} &
+  {`r format_p(accept_sum[["coefficients"]][4,4])`}** \\  
+\hspace{3mm}{Intra Text}  &  
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][5,1])`} &
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][5,2])`} &
+  {`r format_p(accept_sum[["coefficients"]][5,4])`}** \\  
+  \midrule  
+    
+\multicolumn{4}{l}{Gender (Reference = {Female})}\\  
+  \hspace{3mm}{Male} &
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][7,1])`} &
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][7,2])`} &
+  {`r format_p(accept_sum[["coefficients"]][7,4])`} \\  
+  \hspace{3mm}{Non-Binary} &
+  -- &
+  -- &
+  \hphantom{0.00}-- \\  
+  \midrule  
+
+{Age}  &  
+  `r sprintf("%0.3f", accept_sum[["coefficients"]][8,1])` &
+  `r sprintf("%0.3f", accept_sum[["coefficients"]][8,2])` &
+  `r format_p(accept_sum[["coefficients"]][8,4])` \\ 
+\midrule  
+{Generalized Trust}  &  
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][6,1])`} &
+  {`r sprintf("%0.3f", accept_sum[["coefficients"]][6,2])`} &
+  {`r format_p(accept_sum[["coefficients"]][6,4])`}** \\  
+  \bottomrule  
+\end{tabularx}
+
+\caption*{
+ \textbf{Request Acceptance Analysis} -- %
+    \textmd{{\small 
+     Logistic mixed effects regression model. 
+     The unit for estimate and standard error is log odds scaled.
+      Significance is denoted by ***~($p < 0.001$), **~($p < 0.01$), and *~($p < 0.05$).}}
+}
+\end{table}
+
+
+### Appendix B: RESULT IS REFERENCED BUT NOT PROVIDED - Sybil trust plot
+```{r Plot ratings by condition, fig.width=10, fig.height=6, echo=FALSE, message=FALSE}
+profiles <- full_profiles_sybil
+
+plot <- ggplot(profiles, aes(x=p_subcond, y=trust)) +
+  geom_boxplot(position=position_dodge(.9)) + 
+    stat_summary(fun=mean, geom="point", shape=20, size=6, color="black", aes(group=prompt), position=position_dodge(.9) ) +
+    theme(
+      legend.key.size = unit(2, 'cm'),
+      panel.background = element_rect(fill = "white", colour = NA), 
+      panel.border = element_rect(fill = NA, colour = "grey20"), 
+      panel.grid = element_line(colour = "grey60"), 
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor.x = element_blank(), 
+      panel.grid.minor = element_line(size = rel(0.5)), 
+      strip.background = element_rect(fill = "grey85", colour = "grey20"), 
+      legend.key = element_rect(fill = "white", colour = NA), 
+      complete = TRUE,
+      #fonts
+      axis.text=element_text(size=20),
+      axis.title=element_text(size=25,face="bold"),
+      legend.title = element_text(size=20), 
+      legend.text = element_text(size=15), 
+      ) +
+    guides(fill=guide_legend(title="Prompt"))+
+    xlab(col_to_readable["p_subcond"]) + ylab("Trust") 
+
+print(plot)
+```
+
+### Descriptive statistics for Sybil trust plot
+```{r, echo=FALSE, message=FALSE}
+trust_by_subcond = full_profiles_sybil %>% 
+  group_by(p_subcond) %>%
+  summarise(trust_mean=mean(trust), trust_standard_dev=sd(trust))
+
+trust_by_subcond %<>% mutate_at(vars(trust_mean, trust_standard_dev), funs(round(., 1)))
+
+kable(trust_by_subcond)
+```
+
+## Appendix B: RESULT IS REFERENCED BUT NOT PROVIDED - Sybil trust modeling
+```{r LMER model for Sybil Trust, include=FALSE}
+modelTrust <- lmer(trust ~  relevel(p_subcond, ref="Sybil") + base_trust + 
+                          relevel(demo_gender, ref = "Female") 
+                          + demo_num_age +
+                          + (1 | id)
+                  ,  data=model_data_sybil, REML=FALSE)
+
+
+trust_sum <- summary(modelTrust)
+```
+
+\begin{table}[H]
+\centering
+\small 
+\begin{tabularx}{\columnwidth}{X r r l}
+
+\toprule
+Variable & Estimate & Std. Err. & \multicolumn{1}{c}{p} \\  
+\midrule  
+  
+{\it Intercept} & 
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][1,1])`} &
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][1,2])`} &
+  {`r format_p(trust_sum[["coefficients"]][1,5])`}*** \\  
+\midrule  
+  
+\multicolumn{4}{l}{Profile Type (Reference = {Sybil})}\\
+\hspace{3mm}{Inter Image} &  
+  `r sprintf("%0.3f", trust_sum[["coefficients"]][2,1])` &
+  `r sprintf("%0.3f", trust_sum[["coefficients"]][2,2])` &
+  `r format_p(trust_sum[["coefficients"]][2,5])`*** \\  
+\hspace{3mm}{Inter Text}  &  
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][3,1])`} &
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][3,2])`} &
+  {`r format_p(trust_sum[["coefficients"]][3,5])`} \\  
+\hspace{3mm}{Intra Image}  &  
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][4,1])`} &
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][4,2])`} &
+  {`r format_p(trust_sum[["coefficients"]][4,5])`}*** \\  
+\hspace{3mm}{Intra Text}  &  
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][5,1])`} &
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][5,2])`} &
+  {`r format_p(trust_sum[["coefficients"]][5,5])`}*** \\  
+  \midrule  
+    
+\multicolumn{4}{l}{Gender (Reference = {Female})}\\  
+  \hspace{3mm}{Male} &
+  { `r sprintf("%0.3f", trust_sum[["coefficients"]][7,1])`} &
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][7,2])`} &
+  {`r format_p(trust_sum[["coefficients"]][7,5])`} \\  
+  \hspace{3mm}{Non-Binary} &
+  -- &
+  -- &
+  \hphantom{0.00}-- \\  
+  \midrule   
+    
+
+{Age}  &  
+  `r sprintf(" %0.3f", trust_sum[["coefficients"]][8,1])` &
+  `r sprintf("%0.3f", trust_sum[["coefficients"]][8,2])` &
+  `r format_p(trust_sum[["coefficients"]][8,5])` \\ 
+  \midrule  
+{Generalized Trust}  &  
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][6,1])`} &
+  {`r sprintf("%0.3f", trust_sum[["coefficients"]][6,2])`} &
+  {`r format_p(trust_sum[["coefficients"]][6,5])`}*** \\  
+  \bottomrule  
+\end{tabularx}
+
+\caption*{
+ \textbf{Trust Analysis} -- %
+    \textmd{{\small 
+     Linear mixed effects regression model. 
+     The unit for estimate and standard error is log odds scaled.
+      Significance is denoted by ***~($p < 0.001$), **~($p < 0.01$), and *~($p < 0.05$).}}
+}
+
+\end{table}
+
+
